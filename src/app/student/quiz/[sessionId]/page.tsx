@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Progress } from '@/components/ui/progress'
 import { Clock, CheckCircle, XCircle, Trophy, Users } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import { getDatabaseHelper } from '@/lib/sqlserver'
 import { useAuth } from '@/components/auth/AuthProvider'
 
 interface Question {
@@ -64,29 +64,32 @@ export default function QuizPage() {
     try {
       setLoading(true)
 
-      // Get session details
-      const { data: sessionData, error: sessionError } = await supabase
-        .from('quiz_sessions')
-        .select(`
-          id,
-          quiz_id,
-          nickname,
-          score,
-          total_questions,
-          current_question,
-          is_active,
-          quiz:quizzes(title, description)
-        `)
-        .eq('id', sessionId)
-        .eq('student_id', (await supabase.auth.getUser()).data.user?.id)
-        .single()
+      const db = await getDatabaseHelper()
 
-      if (sessionError) throw sessionError
+      // Get session details with quiz info
+      const sessionData = await db.query(
+        `SELECT qs.*, q.title, q.description
+         FROM quiz_sessions qs
+         JOIN quizzes q ON qs.quiz_id = q.id
+         WHERE qs.id = @param0 AND qs.student_id = @param1`,
+        [sessionId, user?.id]
+      )
 
-      // Transform the data to match the interface
+      if (sessionData.length === 0) throw new Error('Session not found')
+
+      const sessionInfo = sessionData[0]
       const transformedSession = {
-        ...sessionData,
-        quiz: Array.isArray(sessionData.quiz) ? sessionData.quiz[0] : sessionData.quiz
+        id: sessionInfo.id,
+        quiz_id: sessionInfo.quiz_id,
+        nickname: sessionInfo.nickname,
+        score: sessionInfo.score,
+        total_questions: sessionInfo.total_questions,
+        current_question: sessionInfo.current_question,
+        is_active: sessionInfo.is_active,
+        quiz: {
+          title: sessionInfo.title,
+          description: sessionInfo.description
+        }
       }
 
       setSession(transformedSession)
@@ -110,16 +113,14 @@ export default function QuizPage() {
 
   const fetchCurrentQuestion = async (quizId: string, questionIndex: number) => {
     try {
-      const { data: questions, error } = await supabase
-        .from('questions')
-        .select('*')
-        .eq('quiz_id', quizId)
-        .order('order_index')
+      const db = await getDatabaseHelper()
+      const questionsData = await db.query(
+        'SELECT * FROM questions WHERE quiz_id = @param0 ORDER BY order_index',
+        [quizId]
+      )
 
-      if (error) throw error
-
-      if (questionIndex < questions.length) {
-        const question = questions[questionIndex]
+      if (questionIndex < questionsData.length) {
+        const question = questionsData[questionIndex]
         setCurrentQuestion(question)
         setTimeLeft(question.time_limit || 30)
         setSelectedAnswer(null)
@@ -136,16 +137,12 @@ export default function QuizPage() {
 
   const fetchLeaderboard = async (quizId: string) => {
     try {
-      const { data, error } = await supabase
-        .from('quiz_sessions')
-        .select('nickname, score, total_questions, completed_at')
-        .eq('quiz_id', quizId)
-        .not('completed_at', 'is', null)
-        .order('score', { ascending: false })
-        .limit(10)
-
-      if (error) throw error
-      setLeaderboard(data || [])
+      const db = await getDatabaseHelper()
+      const leaderboardData = await db.query(
+        'SELECT nickname, score, total_questions, completed_at FROM quiz_sessions WHERE quiz_id = @param0 AND completed_at IS NOT NULL ORDER BY score DESC',
+        [quizId]
+      )
+      setLeaderboard(leaderboardData.slice(0, 10))
     } catch (err: any) {
       console.error('Error fetching leaderboard:', err)
     }
@@ -158,32 +155,21 @@ export default function QuizPage() {
     setIsAnswered(true)
 
     try {
+      const db = await getDatabaseHelper()
       const isCorrect = answerIndex === currentQuestion!.correct_answer
 
       // Submit answer
-      const { error } = await supabase
-        .from('answers')
-        .insert({
-          session_id: sessionId,
-          question_id: currentQuestion!.id,
-          answer: answerIndex,
-          is_correct: isCorrect,
-          time_taken: currentQuestion!.time_limit - timeLeft
-        })
-
-      if (error) throw error
+      await db.query(
+        'INSERT INTO answers (session_id, question_id, answer, is_correct, time_taken, answered_at) VALUES (@param0, @param1, @param2, @param3, @param4, @param5)',
+        [sessionId, currentQuestion!.id, answerIndex, isCorrect ? 1 : 0, currentQuestion!.time_limit - timeLeft, new Date().toISOString()]
+      )
 
       // Update session score if correct
       if (isCorrect) {
-        const { error: updateError } = await supabase
-          .from('quiz_sessions')
-          .update({
-            score: (session!.score || 0) + 1,
-            current_question: session!.current_question + 1
-          })
-          .eq('id', sessionId)
-
-        if (updateError) throw updateError
+        await db.query(
+          'UPDATE quiz_sessions SET score = score + 1, current_question = current_question + 1 WHERE id = @param0',
+          [sessionId]
+        )
 
         setSession(prev => prev ? {
           ...prev,
@@ -191,14 +177,10 @@ export default function QuizPage() {
           current_question: prev.current_question + 1
         } : null)
       } else {
-        const { error: updateError } = await supabase
-          .from('quiz_sessions')
-          .update({
-            current_question: session!.current_question + 1
-          })
-          .eq('id', sessionId)
-
-        if (updateError) throw updateError
+        await db.query(
+          'UPDATE quiz_sessions SET current_question = current_question + 1 WHERE id = @param0',
+          [sessionId]
+        )
 
         setSession(prev => prev ? {
           ...prev,
@@ -226,15 +208,11 @@ export default function QuizPage() {
 
   const completeQuiz = async () => {
     try {
-      const { error } = await supabase
-        .from('quiz_sessions')
-        .update({
-          is_active: false,
-          completed_at: new Date().toISOString()
-        })
-        .eq('id', sessionId)
-
-      if (error) throw error
+      const db = await getDatabaseHelper()
+      await db.query(
+        'UPDATE quiz_sessions SET is_active = 0, completed_at = @param0 WHERE id = @param1',
+        [new Date().toISOString(), sessionId]
+      )
 
       setSession(prev => prev ? { ...prev, is_active: false } : null)
       await fetchLeaderboard(session!.quiz_id)

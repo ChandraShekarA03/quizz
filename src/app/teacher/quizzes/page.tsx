@@ -1,4 +1,4 @@
-'use client'
+//'use client'
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
@@ -23,8 +23,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { supabase } from '@/lib/supabase'
+import { getDatabaseHelper } from '@/lib/sqlserver'
 import { useAuth } from '@/components/auth/AuthProvider'
+import type { Database } from '@/lib/sqlserver'
 
 interface Quiz {
   id: string
@@ -50,30 +51,28 @@ export default function TeacherQuizzesPage() {
     try {
       setLoading(true)
 
-      const { data, error } = await supabase
-        .from('quizzes')
-        .select(`
-          id,
-          title,
-          description,
-          is_active,
-          created_at,
-          questions:questions(count),
-          sessions:quiz_sessions(count)
-        `)
-        .eq('teacher_id', user?.id)
-        .order('created_at', { ascending: false })
+      const db = await getDatabaseHelper()
+      const quizzesData = await db.getQuizzesByTeacher(user?.id || '')
 
-      if (error) throw error
+      // Get question counts and session counts for each quiz
+      const quizzesWithCounts = await Promise.all(
+        quizzesData.map(async (quiz) => {
+          const questions = await db.query('SELECT COUNT(*) as count FROM questions WHERE quiz_id = @param0', [quiz.id])
+          const sessions = await db.query('SELECT COUNT(*) as count FROM quiz_sessions WHERE quiz_id = @param0', [quiz.id])
 
-      // Transform the data to include counts
-      const transformedQuizzes = data.map(quiz => ({
-        ...quiz,
-        questions_count: Array.isArray(quiz.questions) ? quiz.questions.length : 0,
-        sessions_count: Array.isArray(quiz.sessions) ? quiz.sessions.length : 0
-      }))
+          return {
+            id: quiz.id,
+            title: quiz.title,
+            description: quiz.description || '',
+            is_active: quiz.status === 'active', // Map status to is_active
+            created_at: quiz.created_at.toISOString(),
+            questions_count: questions[0]?.count || 0,
+            sessions_count: sessions[0]?.count || 0
+          }
+        })
+      )
 
-      setQuizzes(transformedQuizzes)
+      setQuizzes(quizzesWithCounts)
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -83,12 +82,12 @@ export default function TeacherQuizzesPage() {
 
   const toggleQuizStatus = async (quizId: string, currentStatus: boolean) => {
     try {
-      const { error } = await supabase
-        .from('quizzes')
-        .update({ is_active: !currentStatus })
-        .eq('id', quizId)
-
-      if (error) throw error
+      const db = await getDatabaseHelper()
+      const newStatus = currentStatus ? 'draft' : 'active'
+      await db.query(
+        'UPDATE quizzes SET status = @param0, updated_at = GETDATE() WHERE id = @param1',
+        [newStatus, quizId]
+      )
 
       setQuizzes(quizzes.map(quiz =>
         quiz.id === quizId
@@ -106,12 +105,8 @@ export default function TeacherQuizzesPage() {
     }
 
     try {
-      const { error } = await supabase
-        .from('quizzes')
-        .delete()
-        .eq('id', quizId)
-
-      if (error) throw error
+      const db = await getDatabaseHelper()
+      await db.query('DELETE FROM quizzes WHERE id = @param0', [quizId])
 
       setQuizzes(quizzes.filter(quiz => quiz.id !== quizId))
     } catch (err: any) {

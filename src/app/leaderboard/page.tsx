@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Trophy, Medal, Award, Search, Users, Calendar } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import { getDatabaseHelper } from '@/lib/sqlserver'
 
 interface LeaderboardEntry {
   quiz_title: string
@@ -38,16 +38,28 @@ export default function LeaderboardPage() {
     try {
       setLoading(true)
 
-      const { data, error } = await supabase
-        .from('leaderboard')
-        .select('*')
-        .order('completed_at', { ascending: false })
-        .limit(100)
+      const db = await getDatabaseHelper()
+      const leaderboardData = await db.query(
+        `SELECT TOP 100
+          q.title as quiz_title,
+          qs.nickname,
+          qs.score,
+          qs.total_questions,
+          qs.completed_at,
+          qs.time_taken
+         FROM leaderboard l
+         JOIN quiz_sessions qs ON l.quiz_id = qs.quiz_id AND l.student_id = qs.student_id
+         JOIN quizzes q ON qs.quiz_id = q.id
+         ORDER BY qs.completed_at DESC`,
+        []
+      )
 
-      if (error) throw error
-
-      const formattedData = (data || []).map(entry => ({
-        ...entry,
+      const formattedData = leaderboardData.map((entry: any) => ({
+        quiz_title: entry.quiz_title,
+        nickname: entry.nickname || 'Anonymous',
+        score: entry.score,
+        total_questions: entry.total_questions,
+        completed_at: entry.completed_at.toISOString(),
         percentage: entry.total_questions > 0 ? (entry.score / entry.total_questions) * 100 : 0
       }))
 

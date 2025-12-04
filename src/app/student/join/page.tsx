@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Users, Play, User } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import { getDatabaseHelper } from '@/lib/sqlserver'
 import { useAuth } from '@/components/auth/AuthProvider'
 
 export default function JoinQuizPage() {
@@ -27,17 +27,18 @@ export default function JoinQuizPage() {
       try {
         // In a real implementation, you'd have a quiz code field
         // For now, we'll search by quiz ID
-        const { data, error } = await supabase
-          .from('quizzes')
-          .select('id, title, description, is_active')
-          .eq('id', code)
-          .eq('is_active', true)
-          .single()
+        const db = await getDatabaseHelper()
+        const quizData = await db.query(
+          'SELECT id, title, description, is_active FROM quizzes WHERE id = @param0 AND is_active = 1',
+          [code]
+        )
 
-        if (error) throw error
-
-        setQuizDetails(data)
-        setError('')
+        if (quizData.length > 0) {
+          setQuizDetails(quizData[0])
+          setError('')
+        } else {
+          throw new Error('Quiz not found')
+        }
       } catch (err: any) {
         setQuizDetails(null)
         if (code.length === 6) {
@@ -65,30 +66,20 @@ export default function JoinQuizPage() {
       }
 
       // Create or get student profile
-      let { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('user_id', user?.id)
-        .single()
-
-      if (profileError && profileError.code !== 'PGRST116') {
-        throw profileError
-      }
+      const db = await getDatabaseHelper()
+      let profile = await db.getProfile(user?.id)
 
       if (!profile) {
         // Create profile if it doesn't exist
-        const { data: newProfile, error: createError } = await supabase
-          .from('profiles')
-          .insert({
-            user_id: user?.id,
-            role: 'student',
-            full_name: nickname.trim()
-          })
-          .select()
-          .single()
-
-        if (createError) throw createError
-        profile = newProfile
+        await db.createProfile({
+          id: user?.id,
+          email: user?.email || '',
+          full_name: nickname.trim(),
+          role: 'student',
+          avatar_url: null,
+          is_approved: true
+        })
+        profile = await db.getProfile(user?.id)
       }
 
       if (!profile) {
@@ -96,39 +87,25 @@ export default function JoinQuizPage() {
       }
 
       // Check if student is already in a session for this quiz
-      const { data: existingSession, error: sessionError } = await supabase
-        .from('quiz_sessions')
-        .select('id')
-        .eq('quiz_id', quizDetails.id)
-        .eq('student_id', profile.id)
-        .eq('is_active', true)
-        .single()
+      const existingSessions = await db.query(
+        'SELECT id FROM quiz_sessions WHERE quiz_id = @param0 AND student_id = @param1 AND is_active = 1',
+        [quizDetails.id, profile.id]
+      )
 
-      if (sessionError && sessionError.code !== 'PGRST116') {
-        throw sessionError
-      }
-
-      if (existingSession) {
+      if (existingSessions.length > 0) {
         // Resume existing session
-        router.push(`/student/quiz/${existingSession.id}`)
+        router.push(`/student/quiz/${existingSessions[0].id}`)
         return
       }
 
       // Create new session
-      const { data: session, error: createSessionError } = await supabase
-        .from('quiz_sessions')
-        .insert({
-          quiz_id: quizDetails.id,
-          student_id: profile.id,
-          nickname: nickname.trim(),
-          is_active: true
-        })
-        .select()
-        .single()
+      const sessionId = await db.createQuizSession({
+        quiz_id: quizDetails.id,
+        student_id: profile.id,
+        is_active: true
+      })
 
-      if (createSessionError) throw createSessionError
-
-      router.push(`/student/quiz/${session.id}`)
+      router.push(`/student/quiz/${sessionId}`)
     } catch (err: any) {
       setError(err.message)
     } finally {

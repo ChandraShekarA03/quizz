@@ -3,15 +3,24 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { supabase } from "@/lib/supabase";
+import { getDatabaseHelper } from "@/lib/sqlserver";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, CheckCircle, XCircle, Users, ArrowLeft } from "lucide-react";
 import Link from "next/link";
-import { Database } from "@/lib/supabase";
 
-type Profile = Database['public']['Tables']['profiles']['Row'];
+
+type Profile = {
+  id: string
+  email: string
+  full_name: string | null
+  role: 'admin' | 'teacher' | 'student'
+  avatar_url: string | null
+  is_approved: boolean
+  created_at: string
+  updated_at: string
+}
 
 export default function AdminPage() {
   const { user, profile, loading } = useAuth();
@@ -34,18 +43,13 @@ export default function AdminPage() {
 
   const fetchTeachers = async () => {
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('role', 'teacher')
-        .order('created_at', { ascending: false });
+      const db = await getDatabaseHelper();
+      const teachersData = await db.query(
+        'SELECT * FROM profiles WHERE role = @param0 ORDER BY created_at DESC',
+        ['teacher']
+      );
 
-      if (error) {
-        console.error('Error fetching teachers:', error);
-        return;
-      }
-
-      setTeachers(data || []);
+      setTeachers(teachersData);
     } catch (error) {
       console.error('Error fetching teachers:', error);
     } finally {
@@ -56,15 +60,8 @@ export default function AdminPage() {
   const updateTeacherApproval = async (teacherId: string, isApproved: boolean) => {
     setUpdating(teacherId);
     try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({ is_approved: isApproved })
-        .eq('id', teacherId);
-
-      if (error) {
-        console.error('Error updating teacher:', error);
-        return;
-      }
+      const db = await getDatabaseHelper();
+      await db.updateProfile(teacherId, { is_approved: isApproved });
 
       // Update local state
       setTeachers(teachers.map(teacher =>

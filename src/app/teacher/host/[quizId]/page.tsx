@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Progress } from '@/components/ui/progress'
 import { Play, Pause, Square, Users, Eye, BarChart3, Clock, Trophy } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import { getDatabaseHelper } from '@/lib/sqlserver'
 import { useAuth } from '@/components/auth/AuthProvider'
 
 interface Quiz {
@@ -56,29 +56,28 @@ export default function HostQuizPage() {
     try {
       setLoading(true)
 
+      const db = await getDatabaseHelper()
+
       // Get quiz details
-      const { data: quizData, error: quizError } = await supabase
-        .from('quizzes')
-        .select('*')
-        .eq('id', quizId)
-        .eq('teacher_id', (await supabase.auth.getUser()).data.user?.id)
-        .single()
+      const quizData = await db.query(
+        'SELECT * FROM quizzes WHERE id = @param0 AND teacher_id = @param1',
+        [quizId, user?.id]
+      )
 
-      if (quizError) throw quizError
+      if (quizData.length === 0) throw new Error('Quiz not found')
 
-      setQuiz(quizData)
+      const quiz = quizData[0]
+      setQuiz(quiz)
 
       // Get questions count
-      const { data: questionsData, error: countError } = await supabase
-        .from('questions')
-        .select('id', { count: 'exact' })
-        .eq('quiz_id', quizId)
-
-      if (countError) throw countError
-      setTotalQuestions(questionsData?.length || 0)
+      const questionsData = await db.query(
+        'SELECT COUNT(*) as count FROM questions WHERE quiz_id = @param0',
+        [quizId]
+      )
+      setTotalQuestions(questionsData[0].count)
 
       // Get current question if quiz is live
-      if (quizData.is_active) {
+      if (quiz.is_active) {
         setIsLive(true)
         await fetchCurrentQuestion()
       }
@@ -94,16 +93,14 @@ export default function HostQuizPage() {
 
   const fetchSessions = async () => {
     try {
-      const { data, error } = await supabase
-        .from('quiz_sessions')
-        .select('id, nickname, score, current_question, is_active, updated_at')
-        .eq('quiz_id', quizId)
-        .order('score', { ascending: false })
-
-      if (error) throw error
+      const db = await getDatabaseHelper()
+      const sessionsData = await db.query(
+        'SELECT id, nickname, score, current_question, is_active, updated_at FROM quiz_sessions WHERE quiz_id = @param0 ORDER BY score DESC',
+        [quizId]
+      )
 
       // Transform the data to match the interface
-      const transformedSessions = (data || []).map(session => ({
+      const transformedSessions = sessionsData.map((session: any) => ({
         ...session,
         last_activity: session.updated_at
       }))
@@ -116,16 +113,14 @@ export default function HostQuizPage() {
 
   const fetchCurrentQuestion = async () => {
     try {
-      const { data: questions, error } = await supabase
-        .from('questions')
-        .select('*')
-        .eq('quiz_id', quizId)
-        .order('order_index')
+      const db = await getDatabaseHelper()
+      const questionsData = await db.query(
+        'SELECT * FROM questions WHERE quiz_id = @param0 ORDER BY order_index',
+        [quizId]
+      )
 
-      if (error) throw error
-
-      if (questionIndex < questions.length) {
-        setCurrentQuestion(questions[questionIndex])
+      if (questionIndex < questionsData.length) {
+        setCurrentQuestion(questionsData[questionIndex])
       }
     } catch (err: any) {
       setError(err.message)
@@ -135,12 +130,11 @@ export default function HostQuizPage() {
   const startQuiz = async () => {
     try {
       // Activate quiz
-      const { error: updateError } = await supabase
-        .from('quizzes')
-        .update({ is_active: true })
-        .eq('id', quizId)
-
-      if (updateError) throw updateError
+      const db = await getDatabaseHelper()
+      await db.query(
+        'UPDATE quizzes SET is_active = 1 WHERE id = @param0',
+        [quizId]
+      )
 
       setIsLive(true)
       setQuiz(prev => prev ? { ...prev, is_active: true } : null)
@@ -164,15 +158,11 @@ export default function HostQuizPage() {
       setShowResults(false)
 
       // Update all active sessions to next question
-      const { error } = await supabase
-        .from('quiz_sessions')
-        .update({
-          current_question: newIndex
-        })
-        .eq('quiz_id', quizId)
-        .eq('is_active', true)
-
-      if (error) throw error
+      const db = await getDatabaseHelper()
+      await db.query(
+        'UPDATE quiz_sessions SET current_question = @param0 WHERE quiz_id = @param1 AND is_active = 1',
+        [newIndex, quizId]
+      )
 
       await fetchCurrentQuestion()
       await fetchSessions()
@@ -188,24 +178,17 @@ export default function HostQuizPage() {
   const endQuiz = async () => {
     try {
       // Deactivate quiz
-      const { error: quizError } = await supabase
-        .from('quizzes')
-        .update({ is_active: false })
-        .eq('id', quizId)
-
-      if (quizError) throw quizError
+      const db = await getDatabaseHelper()
+      await db.query(
+        'UPDATE quizzes SET is_active = 0 WHERE id = @param0',
+        [quizId]
+      )
 
       // End all active sessions
-      const { error: sessionError } = await supabase
-        .from('quiz_sessions')
-        .update({
-          is_active: false,
-          completed_at: new Date().toISOString()
-        })
-        .eq('quiz_id', quizId)
-        .eq('is_active', true)
-
-      if (sessionError) throw sessionError
+      await db.query(
+        'UPDATE quiz_sessions SET is_active = 0, completed_at = @param0 WHERE quiz_id = @param1 AND is_active = 1',
+        [new Date().toISOString(), quizId]
+      )
 
       setIsLive(false)
       setQuiz(prev => prev ? { ...prev, is_active: false } : null)

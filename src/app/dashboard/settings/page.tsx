@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2, ArrowLeft } from "lucide-react";
 import Link from "next/link";
-import { supabase } from "@/lib/supabase";
+import { getDatabaseHelper } from "@/lib/sqlserver";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
 export default function SettingsPage() {
@@ -32,19 +32,14 @@ export default function SettingsPage() {
     setError(null);
     setSuccess(null);
 
-    const { data, error } = await supabase
-      .from("profiles")
-      .update({ full_name: fullName })
-      .eq("id", user.id)
-      .select()
-      .single();
-
-    if (error) {
-      setError("Failed to update profile. Please try again.");
-      console.error("Error updating profile:", error);
-    } else if (data) {
+    try {
+      const db = await getDatabaseHelper();
+      await db.updateProfile(user.id, { full_name: fullName });
       setSuccess("Profile updated successfully!");
       await refreshProfile();
+    } catch (error) {
+      setError("Failed to update profile. Please try again.");
+      console.error("Error updating profile:", error);
     }
 
     setIsUpdating(false);

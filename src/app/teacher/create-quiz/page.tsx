@@ -10,7 +10,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Plus, Trash2, Save, Clock, Users } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import { getDatabaseHelper } from '@/lib/sqlserver'
+import { useAuth } from '@/components/auth/AuthProvider'
 
 interface Question {
   id: string
@@ -22,6 +23,7 @@ interface Question {
 
 export default function CreateQuizPage() {
   const router = useRouter()
+  const { user } = useAuth()
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [questions, setQuestions] = useState<Question[]>([
@@ -97,33 +99,24 @@ export default function CreateQuizPage() {
       }
 
       // Create quiz
-      const { data: quiz, error: quizError } = await supabase
-        .from('quizzes')
-        .insert({
-          title: title.trim(),
-          description: description.trim(),
-          teacher_id: (await supabase.auth.getUser()).data.user?.id,
-          is_active: false
-        })
-        .select()
-        .single()
-
-      if (quizError) throw quizError
+      const db = await getDatabaseHelper()
+      const quizId = await db.createQuiz({
+        title: title.trim(),
+        description: description.trim(),
+        teacher_id: user?.id,
+        status: 'draft',
+        total_questions: questions.length,
+        is_randomized: false,
+        show_results: true
+      })
 
       // Create questions
-      const questionsToInsert = questions.map(q => ({
-        quiz_id: quiz.id,
-        question: q.question.trim(),
-        options: q.options.map(opt => opt.trim()),
-        correct_answer: q.correctAnswer,
-        time_limit: q.timeLimit
-      }))
-
-      const { error: questionsError } = await supabase
-        .from('questions')
-        .insert(questionsToInsert)
-
-      if (questionsError) throw questionsError
+      for (const q of questions) {
+        await db.query(
+          'INSERT INTO questions (quiz_id, question, options, correct_answer, time_limit, order_index) VALUES (@param0, @param1, @param2, @param3, @param4, @param5)',
+          [quizId, q.question.trim(), JSON.stringify(q.options.map(opt => opt.trim())), q.correctAnswer, q.timeLimit, questions.indexOf(q) + 1]
+        )
+      }
 
       router.push('/teacher/quizzes')
     } catch (err: any) {
